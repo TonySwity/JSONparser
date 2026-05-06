@@ -246,6 +246,34 @@
     font-size:12.5px;line-height:1.6;white-space:pre;overflow:auto;
     color:var(--text);max-height:calc(100vh - 250px);
   }
+  .preview-tabs{
+    display:flex;align-items:center;gap:4px;margin-bottom:10px;
+    border-bottom:1px solid var(--line);padding-bottom:8px;
+  }
+  .preview-tabs .spacer{flex:1}
+  .ptab{
+    background:transparent;color:var(--muted);border:none;
+    padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;
+    font-weight:500;transition:all .15s;
+  }
+  .ptab:hover{color:var(--text);background:var(--bg-3)}
+  .ptab.active{color:var(--accent);background:var(--accent-soft)}
+  .lang-picker{
+    background:var(--bg-2);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:5px 8px;font-size:12px;outline:none;
+    font-family:inherit;
+  }
+  .lang-picker:focus{border-color:var(--accent)}
+  .icon-btn.small{width:28px;height:28px}
+  .icon-btn.small svg{width:13px;height:13px}
+  /* Code highlighting */
+  .preview-code .kw{color:var(--purple);font-weight:500}
+  .preview-code .ty{color:var(--cyan)}
+  .preview-code .id{color:var(--blue)}
+  .preview-code .str{color:var(--green)}
+  .preview-code .num{color:var(--purple)}
+  .preview-code .cm{color:var(--muted);font-style:italic}
+  .preview-code .at{color:var(--yellow)}
 
   /* ----- Generator view ----- */
   .gen-layout{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);flex:1;min-height:0}
@@ -504,11 +532,35 @@
           </div>
 
           <div class="builder-pane">
-            <h2>Live Preview <small>Schema as JSON</small></h2>
-            <pre class="preview-code" id="schema-preview"></pre>
-            <div style="height:14px"></div>
-            <h2 style="font-size:13px;margin-top:8px">Sample instance</h2>
-            <pre class="preview-code" id="sample-preview"></pre>
+            <div class="preview-tabs">
+              <button class="ptab active" data-ptab="schema">JSON Schema</button>
+              <button class="ptab" data-ptab="sample">Sample</button>
+              <button class="ptab" data-ptab="code">Code</button>
+              <div class="spacer"></div>
+              <select id="lang-select" class="lang-picker" style="display:none">
+                <option value="typescript">TypeScript</option>
+                <option value="python">Python (dataclass)</option>
+                <option value="pydantic">Python (pydantic)</option>
+                <option value="csharp">C#</option>
+                <option value="java">Java</option>
+                <option value="kotlin">Kotlin</option>
+                <option value="go">Go</option>
+                <option value="rust">Rust (serde)</option>
+                <option value="cpp">C++ (struct)</option>
+                <option value="swift">Swift (Codable)</option>
+                <option value="php">PHP</option>
+                <option value="ruby">Ruby</option>
+                <option value="dart">Dart</option>
+                <option value="zod">Zod schema</option>
+              </select>
+              <button class="icon-btn small" id="btn-copy-preview" title="Copy">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+              <button class="icon-btn small" id="btn-download-preview" title="Download">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </button>
+            </div>
+            <pre class="preview-code" id="preview-output" style="max-height:calc(100vh - 220px)"></pre>
           </div>
         </div>
       </section>
@@ -557,12 +609,13 @@
         <div class="parser">
           <div class="parser-pane">
             <div class="pane-header">
-              <span>Source JSON</span>
+              <span>Source JSON / JSONC</span>
+              <span class="pill" title="Comments and trailing commas supported">JSONC</span>
               <div class="spacer"></div>
               <span class="pill" id="parser-status">empty</span>
             </div>
             <div class="editor-area">
-              <textarea id="json-input" placeholder="Paste JSON here, drop a file, or click 'Sample'…&#10;&#10;Example:&#10;{&#10;  &quot;name&quot;: &quot;CraftHub&quot;,&#10;  &quot;stars&quot;: 48,&#10;  &quot;tags&quot;: [&quot;json&quot;, &quot;editor&quot;]&#10;}"></textarea>
+              <textarea id="json-input" placeholder="Paste JSON or JSONC (with // comments and trailing commas), drop a file, or click 'Sample'…&#10;&#10;Example:&#10;{&#10;  // comments are allowed&#10;  &quot;name&quot;: &quot;CraftHub&quot;,&#10;  &quot;stars&quot;: 48,&#10;  &quot;tags&quot;: [&quot;json&quot;, &quot;editor&quot;], /* trailing commas OK */&#10;}"></textarea>
             </div>
           </div>
           <div class="parser-pane">
@@ -625,10 +678,52 @@ let state = {
   classes: [],     // [{id, name, fields:[{name,type,defaultVal,itemType,nestedClass,enumVals}]}]
   activeClassId: null,
   view: "builder",
+  previewTab: "schema",   // schema | sample | code
+  previewLang: "typescript",
   parsedJson: null,
   expandedPaths: new Set(),
   collapsedPaths: new Set()
 };
+
+/* ============================================================
+   JSONC support — strip // line comments, /* block comments,
+   and trailing commas. Preserves them inside strings.
+   ============================================================ */
+function stripJsonc(src){
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  let inString = false;
+  let stringChar = '"';
+  while(i < n){
+    const c = src[i], next = src[i+1];
+    if(inString){
+      if(c === "\\" && i+1 < n){ out += c + next; i+=2; continue; }
+      if(c === stringChar){ inString = false; }
+      out += c; i++; continue;
+    }
+    // outside strings
+    if(c === '"'){ inString = true; stringChar = '"'; out += c; i++; continue; }
+    if(c === "/" && next === "/"){
+      // line comment until \n
+      while(i < n && src[i] !== "\n") i++;
+      continue;
+    }
+    if(c === "/" && next === "*"){
+      i += 2;
+      while(i < n && !(src[i] === "*" && src[i+1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += c; i++;
+  }
+  // remove trailing commas: ", }" or ", ]"
+  out = out.replace(/,(\s*[}\]])/g, "$1");
+  return out;
+}
+function parseJsonc(src){
+  return JSON.parse(stripJsonc(src));
+}
 
 /* ----- Helpers ----- */
 function uid(){return Math.random().toString(36).slice(2,10)}
@@ -795,11 +890,518 @@ function fieldRowHtml(f,i,objClassOptions){
 }
 function renderPreview(){
   const c = getActive();
-  if(!c){return}
-  const schema = classToJsonSchema(c);
-  const sample = classToSample(c);
-  $("#schema-preview").innerHTML = highlightJSON(JSON.stringify(schema,null,2));
-  $("#sample-preview").innerHTML = highlightJSON(JSON.stringify(sample,null,2));
+  const out = $("#preview-output");
+  if(!c){ if(out) out.innerHTML = ""; return; }
+  const tab = state.previewTab;
+  $("#lang-select").style.display = tab === "code" ? "" : "none";
+  if(tab === "schema"){
+    out.innerHTML = highlightJSON(JSON.stringify(classToJsonSchema(c), null, 2));
+  } else if(tab === "sample"){
+    out.innerHTML = highlightJSON(JSON.stringify(classToSample(c), null, 2));
+  } else {
+    const lang = state.previewLang;
+    const code = generateCode(lang, c);
+    out.innerHTML = highlightCode(lang, code);
+  }
+}
+
+/* ============================================================
+   Multi-language class code generation
+   ============================================================ */
+function generateCode(lang, c){
+  const seen = new Set();
+  const order = collectClassesInOrder(c, seen);  // topological-ish
+  switch(lang){
+    case "typescript": return order.map(genTypeScript).join("\n\n");
+    case "python":     return "from dataclasses import dataclass, field\nfrom typing import List, Optional, Any\n\n" + order.map(genPython).join("\n\n");
+    case "pydantic":   return "from pydantic import BaseModel\nfrom typing import List, Optional, Any\n\n" + order.map(genPydantic).join("\n\n");
+    case "csharp":     return "using System;\nusing System.Collections.Generic;\n\nnamespace YourNamespace;\n\n" + order.map(genCSharp).join("\n\n");
+    case "java":       return "import java.util.List;\n\n" + order.map(genJava).join("\n\n");
+    case "kotlin":     return order.map(genKotlin).join("\n\n");
+    case "go":         return "package model\n\n" + order.map(genGo).join("\n\n");
+    case "rust":       return "use serde::{Deserialize, Serialize};\n\n" + order.map(genRust).join("\n\n");
+    case "cpp":        return "#include <string>\n#include <vector>\n\n" + order.map(genCpp).join("\n\n");
+    case "swift":      return "import Foundation\n\n" + order.map(genSwift).join("\n\n");
+    case "php":        return "<?php\n\n" + order.map(genPhp).join("\n\n");
+    case "ruby":       return order.map(genRuby).join("\n\n");
+    case "dart":       return order.map(genDart).join("\n\n");
+    case "zod":        return "import { z } from \"zod\";\n\n" + order.map(genZod).join("\n\n");
+  }
+  return "";
+}
+function collectClassesInOrder(c, seen, order){
+  order = order || [];
+  if(!c || seen.has(c.id)) return order;
+  seen.add(c.id);
+  // First visit dependencies (nested classes / array<object>)
+  for(const f of c.fields){
+    if((f.type==="object") && f.defaultVal){
+      const nested = findClassByName(f.defaultVal);
+      if(nested) collectClassesInOrder(nested, seen, order);
+    }
+    if(f.type==="array" && f.itemType==="object" && f.defaultVal){
+      const nested = findClassByName(f.defaultVal);
+      if(nested) collectClassesInOrder(nested, seen, order);
+    }
+  }
+  order.push(c);
+  return order;
+}
+function pascal(s){return (s||"X").replace(/(^|[\s_-])(\w)/g,(_,$1,$2)=>$2.toUpperCase()).replace(/[\s_-]/g,"");}
+function snake(s){return (s||"x").replace(/([a-z])([A-Z])/g,"$1_$2").toLowerCase();}
+function arrItemClass(f){
+  if(f.type==="array" && f.itemType==="object" && f.defaultVal){
+    const t = findClassByName(f.defaultVal);
+    if(t) return pascal(t.name);
+  }
+  return null;
+}
+function objNestedClass(f){
+  if(f.type==="object" && f.defaultVal){
+    const t = findClassByName(f.defaultVal);
+    if(t) return pascal(t.name);
+  }
+  return null;
+}
+
+/* ----- TypeScript (interfaces) ----- */
+function genTypeScript(c){
+  const lines = [`export interface ${pascal(c.name)} {`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "any";
+    switch(f.type){
+      case "string": t = "string"; break;
+      case "number": case "integer": t = "number"; break;
+      case "boolean": t = "boolean"; break;
+      case "null": t = "null"; break;
+      case "enum": {
+        const vals = (f.defaultVal||"").split(",").map(s=>s.trim()).filter(Boolean);
+        t = vals.length ? vals.map(v=>`"${v}"`).join(" | ") : "string";
+        break;
+      }
+      case "array": {
+        const cls = arrItemClass(f);
+        if(cls){ t = `${cls}[]`; }
+        else if(f.itemType==="number"||f.itemType==="integer") t="number[]";
+        else if(f.itemType==="boolean") t="boolean[]";
+        else if(f.itemType==="object") t="Record<string, any>[]";
+        else t="string[]";
+        break;
+      }
+      case "object": {
+        const cls = objNestedClass(f);
+        t = cls || "Record<string, any>";
+        break;
+      }
+    }
+    lines.push(`  ${f.name}: ${t};`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/* ----- Python (dataclass) ----- */
+function genPython(c){
+  const lines = [`@dataclass`, `class ${pascal(c.name)}:`];
+  if(c.fields.length===0) lines.push("    pass");
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "Any", def = null;
+    switch(f.type){
+      case "string": t="str"; def=`"${(f.defaultVal||"").replace(/"/g,'\\"')}"`; break;
+      case "number": t="float"; def=parseFloat(f.defaultVal)||0.0; break;
+      case "integer": t="int"; def=parseInt(f.defaultVal,10)||0; break;
+      case "boolean": t="bool"; def=f.defaultVal==="false"?"False":"True"; break;
+      case "null": t="Optional[Any]"; def="None"; break;
+      case "enum": t="str"; {
+        const v=(f.defaultVal||"").split(",")[0]?.trim()||""; def=`"${v}"`;
+      } break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let inner = cls || ({number:"float",integer:"int",boolean:"bool",object:"dict",string:"str"}[f.itemType||"string"]);
+        t = `List[${inner}]`; def="field(default_factory=list)";
+        lines.push(`    ${f.name}: ${t} = ${def}`); continue;
+      }
+      case "object": {
+        const cls = objNestedClass(f);
+        if(cls){
+          t=cls; def=`field(default_factory=${cls})`;
+          lines.push(`    ${f.name}: ${t} = ${def}`); continue;
+        }
+        t="dict"; def="field(default_factory=dict)";
+        lines.push(`    ${f.name}: ${t} = ${def}`); continue;
+      }
+    }
+    lines.push(`    ${f.name}: ${t} = ${def}`);
+  }
+  return lines.join("\n");
+}
+
+/* ----- Python (pydantic v2) ----- */
+function genPydantic(c){
+  const lines = [`class ${pascal(c.name)}(BaseModel):`];
+  if(c.fields.length===0) lines.push("    pass");
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "Any";
+    switch(f.type){
+      case "string": t="str"; break;
+      case "number": t="float"; break;
+      case "integer": t="int"; break;
+      case "boolean": t="bool"; break;
+      case "null": t="Optional[Any] = None"; break;
+      case "enum": t="str"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let inner = cls || ({number:"float",integer:"int",boolean:"bool",object:"dict",string:"str"}[f.itemType||"string"]);
+        t = `List[${inner}]`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "dict"; break;
+    }
+    lines.push(`    ${f.name}: ${t}`);
+  }
+  return lines.join("\n");
+}
+
+/* ----- C# ----- */
+function genCSharp(c){
+  const lines = [`public class ${pascal(c.name)}`,`{`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "object";
+    switch(f.type){
+      case "string": t="string"; break;
+      case "number": t="double"; break;
+      case "integer": t="int"; break;
+      case "boolean": t="bool"; break;
+      case "null": t="object?"; break;
+      case "enum": t="string"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let inner = cls || ({number:"double",integer:"int",boolean:"bool",object:"object",string:"string"}[f.itemType||"string"]);
+        t = `List<${inner}>`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "object"; break;
+    }
+    lines.push(`    public ${t} ${pascal(f.name)} { get; set; }`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/* ----- Java ----- */
+function genJava(c){
+  const lines = [`public class ${pascal(c.name)} {`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "Object";
+    switch(f.type){
+      case "string": t="String"; break;
+      case "number": t="double"; break;
+      case "integer": t="int"; break;
+      case "boolean": t="boolean"; break;
+      case "null": t="Object"; break;
+      case "enum": t="String"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let inner = cls || ({number:"Double",integer:"Integer",boolean:"Boolean",object:"Object",string:"String"}[f.itemType||"string"]);
+        t = `List<${inner}>`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "Object"; break;
+    }
+    lines.push(`    private ${t} ${f.name};`);
+  }
+  // getters/setters omitted for brevity (Lombok @Data hint)
+  lines.push("    // generate getters/setters or use Lombok @Data");
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/* ----- Kotlin ----- */
+function genKotlin(c){
+  const lines = [`data class ${pascal(c.name)}(`];
+  const inner = [];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "Any?";
+    switch(f.type){
+      case "string": t="String"; break;
+      case "number": t="Double"; break;
+      case "integer": t="Int"; break;
+      case "boolean": t="Boolean"; break;
+      case "null": t="Any?"; break;
+      case "enum": t="String"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let i = cls || ({number:"Double",integer:"Int",boolean:"Boolean",object:"Any",string:"String"}[f.itemType||"string"]);
+        t = `List<${i}>`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "Map<String, Any>"; break;
+    }
+    inner.push(`    val ${f.name}: ${t}`);
+  }
+  lines.push(inner.join(",\n"));
+  lines.push(")");
+  return lines.join("\n");
+}
+
+/* ----- Go ----- */
+function genGo(c){
+  const lines = [`type ${pascal(c.name)} struct {`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "interface{}";
+    switch(f.type){
+      case "string": t="string"; break;
+      case "number": t="float64"; break;
+      case "integer": t="int"; break;
+      case "boolean": t="bool"; break;
+      case "null": t="interface{}"; break;
+      case "enum": t="string"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let i = cls || ({number:"float64",integer:"int",boolean:"bool",object:"map[string]interface{}",string:"string"}[f.itemType||"string"]);
+        t = `[]${i}`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "map[string]interface{}"; break;
+    }
+    lines.push(`    ${pascal(f.name)} ${t} \`json:"${f.name}"\``);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/* ----- Rust ----- */
+function genRust(c){
+  const lines = [`#[derive(Debug, Serialize, Deserialize)]`,`pub struct ${pascal(c.name)} {`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "serde_json::Value";
+    switch(f.type){
+      case "string": t="String"; break;
+      case "number": t="f64"; break;
+      case "integer": t="i64"; break;
+      case "boolean": t="bool"; break;
+      case "null": t="Option<serde_json::Value>"; break;
+      case "enum": t="String"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let i = cls || ({number:"f64",integer:"i64",boolean:"bool",object:"serde_json::Value",string:"String"}[f.itemType||"string"]);
+        t = `Vec<${i}>`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "serde_json::Value"; break;
+    }
+    lines.push(`    pub ${snake(f.name)}: ${t},`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/* ----- C++ ----- */
+function genCpp(c){
+  const lines = [`struct ${pascal(c.name)} {`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "std::string";
+    switch(f.type){
+      case "string": t="std::string"; break;
+      case "number": t="double"; break;
+      case "integer": t="int"; break;
+      case "boolean": t="bool"; break;
+      case "null": t="void*"; break;
+      case "enum": t="std::string"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let i = cls || ({number:"double",integer:"int",boolean:"bool",object:"void*",string:"std::string"}[f.itemType||"string"]);
+        t = `std::vector<${i}>`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "void*"; break;
+    }
+    lines.push(`    ${t} ${f.name};`);
+  }
+  lines.push("};");
+  return lines.join("\n");
+}
+
+/* ----- Swift ----- */
+function genSwift(c){
+  const lines = [`struct ${pascal(c.name)}: Codable {`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "Any";
+    switch(f.type){
+      case "string": t="String"; break;
+      case "number": t="Double"; break;
+      case "integer": t="Int"; break;
+      case "boolean": t="Bool"; break;
+      case "null": t="String?"; break;
+      case "enum": t="String"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let i = cls || ({number:"Double",integer:"Int",boolean:"Bool",object:"[String:Any]",string:"String"}[f.itemType||"string"]);
+        t = `[${i}]`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "[String: Any]"; break;
+    }
+    lines.push(`    let ${f.name}: ${t}`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/* ----- PHP ----- */
+function genPhp(c){
+  const lines = [`class ${pascal(c.name)}`,`{`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "mixed";
+    switch(f.type){
+      case "string": t="string"; break;
+      case "number": t="float"; break;
+      case "integer": t="int"; break;
+      case "boolean": t="bool"; break;
+      case "null": t="?mixed"; break;
+      case "enum": t="string"; break;
+      case "array": t="array"; break;
+      case "object": t = objNestedClass(f) || "object"; break;
+    }
+    lines.push(`    public ${t} $${f.name};`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/* ----- Ruby ----- */
+function genRuby(c){
+  const lines = [`class ${pascal(c.name)}`];
+  const attrs = c.fields.filter(f=>f.name).map(f=>`:${f.name}`);
+  if(attrs.length) lines.push(`  attr_accessor ${attrs.join(", ")}`);
+  lines.push("");
+  lines.push(`  def initialize(${c.fields.filter(f=>f.name).map(f=>f.name+":nil").join(", ")})`);
+  for(const f of c.fields){
+    if(!f.name) continue;
+    lines.push(`    @${f.name} = ${f.name}`);
+  }
+  lines.push("  end");
+  lines.push("end");
+  return lines.join("\n");
+}
+
+/* ----- Dart ----- */
+function genDart(c){
+  const lines = [`class ${pascal(c.name)} {`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "dynamic";
+    switch(f.type){
+      case "string": t="String"; break;
+      case "number": t="double"; break;
+      case "integer": t="int"; break;
+      case "boolean": t="bool"; break;
+      case "null": t="dynamic"; break;
+      case "enum": t="String"; break;
+      case "array": {
+        const cls = arrItemClass(f);
+        let i = cls || ({number:"double",integer:"int",boolean:"bool",object:"Map<String,dynamic>",string:"String"}[f.itemType||"string"]);
+        t = `List<${i}>`;
+        break;
+      }
+      case "object": t = objNestedClass(f) || "Map<String,dynamic>"; break;
+    }
+    lines.push(`  ${t} ${f.name};`);
+  }
+  // constructor
+  const params = c.fields.filter(f=>f.name).map(f=>`required this.${f.name}`);
+  if(params.length){
+    lines.push("");
+    lines.push(`  ${pascal(c.name)}({${params.join(", ")}});`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/* ----- Zod (TS validation schema) ----- */
+function genZod(c){
+  const lines = [`export const ${pascal(c.name)}Schema = z.object({`];
+  for(const f of c.fields){
+    if(!f.name) continue;
+    let t = "z.any()";
+    switch(f.type){
+      case "string": t="z.string()"; break;
+      case "number": t="z.number()"; break;
+      case "integer": t="z.number().int()"; break;
+      case "boolean": t="z.boolean()"; break;
+      case "null": t="z.null()"; break;
+      case "enum": {
+        const vals = (f.defaultVal||"").split(",").map(s=>s.trim()).filter(Boolean);
+        t = vals.length ? `z.enum([${vals.map(v=>`"${v}"`).join(", ")}])` : "z.string()";
+        break;
+      }
+      case "array": {
+        const cls = arrItemClass(f);
+        let inner = cls ? `${cls}Schema` : ({number:"z.number()",integer:"z.number().int()",boolean:"z.boolean()",object:"z.record(z.any())",string:"z.string()"}[f.itemType||"string"]);
+        t = `z.array(${inner})`;
+        break;
+      }
+      case "object": {
+        const cls = objNestedClass(f);
+        t = cls ? `${cls}Schema` : "z.record(z.any())";
+        break;
+      }
+    }
+    lines.push(`  ${f.name}: ${t},`);
+  }
+  lines.push("});");
+  lines.push(`export type ${pascal(c.name)} = z.infer<typeof ${pascal(c.name)}Schema>;`);
+  return lines.join("\n");
+}
+
+/* ----- Light syntax highlighting for generated code ----- */
+function highlightCode(lang, src){
+  if(!src) return "";
+  let s = src.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  // strings
+  s = s.replace(/("[^"]*"|'[^']*')/g,'<span class="str">$1</span>');
+  // line comments
+  s = s.replace(/(\/\/.*$|#.*$)/gm,'<span class="cm">$1</span>');
+  // block comments /* */
+  s = s.replace(/(\/\*[\s\S]*?\*\/)/g,'<span class="cm">$1</span>');
+  // numbers
+  s = s.replace(/(?<![\w"])(-?\d+(?:\.\d+)?)(?!\w)/g,'<span class="num">$1</span>');
+  // attributes / decorators
+  s = s.replace(/(^|\n)(\s*)(@[\w\[\]\(\)=, "'\.]+|#\[[^\]]+\])/g,'$1$2<span class="at">$3</span>');
+  // keywords by language
+  const kwMap = {
+    typescript:["interface","export","string","number","boolean","null","any","Record","import","from","z","type","const"],
+    python:    ["class","from","import","dataclass","field","Optional","List","Any","str","int","float","bool","dict","None","True","False"],
+    pydantic:  ["class","from","import","BaseModel","Optional","List","Any","str","int","float","bool","dict"],
+    csharp:    ["public","class","get","set","string","int","double","bool","object","List","using","namespace"],
+    java:      ["public","class","private","String","int","double","boolean","Object","List","import"],
+    kotlin:    ["data","class","val","var","Int","Double","Boolean","String","Any","List","Map"],
+    go:        ["package","type","struct","string","int","float64","bool","interface","map"],
+    rust:      ["pub","struct","String","i64","f64","bool","Vec","Option","use","derive","Serialize","Deserialize"],
+    cpp:       ["struct","int","double","bool","void","std","string","vector"],
+    swift:     ["struct","let","var","String","Int","Double","Bool","Codable","import","Foundation","Any"],
+    php:       ["class","public","string","int","float","bool","array","object","mixed"],
+    ruby:      ["class","def","end","attr_accessor","initialize","nil"],
+    dart:      ["class","String","int","double","bool","dynamic","List","Map","required","this"],
+    zod:       ["export","const","import","from","z","string","number","boolean","null","array","object","record","enum","int"]
+  };
+  const kws = kwMap[lang] || [];
+  if(kws.length){
+    const re = new RegExp(`\\b(${kws.join("|")})\\b`, "g");
+    s = s.replace(re, '<span class="kw">$1</span>');
+  }
+  return s;
 }
 function classToJsonSchema(c){
   const out = {type:"object", title:c.name||"Unnamed", properties:{}, required:[]};
@@ -1049,11 +1651,13 @@ function parseAndRender(){
     return;
   }
   try{
-    const data = JSON.parse(txt);
+    const cleaned = stripJsonc(txt);
+    const data = JSON.parse(cleaned);
     state.parsedJson = data;
     out.innerHTML = "";
     out.appendChild(buildTreeNode("$", data, "$", true));
-    setParserStatus("valid", true);
+    const hadComments = cleaned !== txt;
+    setParserStatus(hadComments ? "JSONC" : "valid", true);
     updateTreeStats(data);
   }catch(e){
     out.innerHTML = `<div class="err-banner">⚠ Parse error: ${escapeHtml(e.message)}</div>`;
@@ -1534,6 +2138,38 @@ function init(){
     c.fields.push({name:"", type:"string", defaultVal:""});
     save();renderBuilder();
   };
+  // Preview tabs (Schema / Sample / Code)
+  $$('.ptab').forEach(b=>{
+    b.onclick = ()=>{
+      $$('.ptab').forEach(x=>x.classList.toggle('active', x===b));
+      state.previewTab = b.dataset.ptab;
+      renderPreview();
+    };
+  });
+  $("#lang-select").onchange = (e)=>{
+    state.previewLang = e.target.value;
+    renderPreview();
+  };
+  $("#btn-copy-preview").onclick = ()=>{
+    copyText($("#preview-output").innerText);
+    toast("Copied","ok");
+  };
+  $("#btn-download-preview").onclick = ()=>{
+    const c = getActive(); if(!c) return;
+    const txt = $("#preview-output").innerText;
+    const ext = ({
+      schema:"schema.json", sample:"sample.json"
+    })[state.previewTab] || ({
+      typescript:"ts", python:"py", pydantic:"py", csharp:"cs", java:"java",
+      kotlin:"kt", go:"go", rust:"rs", cpp:"cpp", swift:"swift",
+      php:"php", ruby:"rb", dart:"dart", zod:"ts"
+    })[state.previewLang] || "txt";
+    const fname = (state.previewTab==="code" ? `${pascal(c.name)}.${ext}` : `${c.name}.${ext}`);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([txt],{type:"text/plain"}));
+    a.download = fname; a.click(); URL.revokeObjectURL(a.href);
+    toast("Downloaded "+fname,"ok");
+  };
   // Generator
   $("#gen-class-select").onchange = ()=>{buildGenForm();rebuildGenOutput();};
   $("#btn-gen-build").onclick = rebuildGenOutput;
@@ -1553,7 +2189,7 @@ function init(){
   $("#btn-parse").onclick = parseAndRender;
   $("#btn-format").onclick = ()=>{
     try{
-      const d = JSON.parse($("#json-input").value);
+      const d = parseJsonc($("#json-input").value);
       $("#json-input").value = JSON.stringify(d,null,2);
       parseAndRender();
       toast("Formatted","ok");
@@ -1561,7 +2197,7 @@ function init(){
   };
   $("#btn-minify").onclick = ()=>{
     try{
-      const d = JSON.parse($("#json-input").value);
+      const d = parseJsonc($("#json-input").value);
       $("#json-input").value = JSON.stringify(d);
       parseAndRender();
       toast("Minified","ok");
